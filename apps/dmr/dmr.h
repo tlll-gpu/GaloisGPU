@@ -47,7 +47,7 @@ struct ShMesh {
   Shared<uint3> neighbours;
   Shared<bool> isdel;
   Shared<bool> isbad;
-  Shared<int> owners;
+  //Shared<int> owners;
 };
 
 struct Mesh {
@@ -64,7 +64,7 @@ struct Mesh {
   volatile bool *isdel;  
   bool *isbad;
   uint3 *neighbours;
-  int *owners;
+  //int *owners;
 
   Mesh() {}
 
@@ -83,7 +83,7 @@ struct Mesh {
     neighbours = mesh.neighbours.gpu_wr_ptr();
     isdel = mesh.isdel.gpu_wr_ptr();
     isbad = mesh.isbad.gpu_wr_ptr();
-    owners = mesh.owners.gpu_wr_ptr(true);
+    //owners = mesh.owners.gpu_wr_ptr(true);
   }
 
   void refresh(ShMesh &mesh) {
@@ -100,7 +100,7 @@ struct Mesh {
     neighbours = mesh.neighbours.gpu_wr_ptr();
     isdel = mesh.isdel.gpu_wr_ptr();
     isbad = mesh.isbad.gpu_wr_ptr();
-    owners = mesh.owners.gpu_wr_ptr(true);
+    //owners = mesh.owners.gpu_wr_ptr(true);
   }
 };
 

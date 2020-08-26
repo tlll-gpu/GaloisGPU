@@ -5,7 +5,7 @@ int main(int argc, char *argv[]) {
   int mesh_nodes, mesh_elements;
   dim3 blocks(14*8), threads(TB_SIZE);
   int no_output = 0;
-
+  initLocks();
   if(argc == 1)
     {
       printf("Usage: %s basefile [maxfactor] [--no]\n", argv[0]);

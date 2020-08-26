@@ -85,7 +85,6 @@ __global__ void __launch_bounds__(TB_SIZE) refine(Mesh mesh, int debg, uint * nn
   uint bc = 0;
   //uint blnodes[BCLEN/4] ;
   bool repush = false;
-  int stage = 0;
   //int x = 0;
   // FP: "2 -> 3;
   wlele_end = *((volatile index_type *) (in_wl).dindex);
@@ -101,84 +100,94 @@ __global__ void __launch_bounds__(TB_SIZE) refine(Mesh mesh, int debg, uint * nn
     nc = 0;
     bc = 0;
     repush = false;
-    stage = 0;
     pop = (in_wl).pop_id(wlele, ele);
+
+    bool lockfail = 0;
+    if (!lock((int *)&mesh.elements[ele])){
+      unlock((int *)&mesh.elements[ele]);
+      lockfail = 1;
+    }
+
     if (pop && ele < mesh.nelements && mesh.isbad[ele] && !mesh.isdel[ele])
     {
-      uint oldcav;
-      cavity[nc++] = ele;
-      do
-      {
-        oldcav = cavity[0];
-        cavity[0] = opposite(mesh, ele);
-      }
-      while (cavity[0] != oldcav);
-      if (!build_cavity(mesh, cavity, nc, CAVLEN, boundary, bc, cx, cy))
-      {
-        build_cavity(mesh, cavity, nc, CAVLEN, boundary, bc, cx, cy);
-      }
-    }
-    int nodes_added = 0;
-    int elems_added = 0;
-    {
-      _ex.mark_p1(nc, (int *) cavity, tid);
-      _ex.mark_p1_iterator(2, bc, 4, (int *) boundary, tid);
-      gb.Sync();
-      _ex.mark_p2(nc, (int *) cavity, tid);
-      _ex.mark_p2_iterator(2, bc, 4, (int *) boundary, tid);
-      gb.Sync();
-      int _x = 1;
-      _x &= _ex.owns(nc, (int *) cavity, tid);
-      _x &= _ex.owns_iterator(2, bc, 4, (int *) boundary, tid);
-      if (_x)
-      {
-        if (nc > 0)
+      if(lockfail == 0){
+        cavity[nc++] = ele;
+        uint oldcav;
+        //cavity[nc++] = ele;
+        do
         {
-          nodes_added = 1;
-          elems_added = (bc >> 2) + (IS_SEGMENT(mesh.elements[cavity[0]]) ? 2 : 0);
-          uint cnode ;
-          uint cseg1 = 0;
-          uint cseg2 = 0;
-          uint nelements_added ;
-          uint oldelements ;
-          uint newelemndx ;
-          cnode = add_node(mesh, cx, cy, atomicAdd(nnodes, 1));
-          nelements_added = elems_added;
-          oldelements = atomicAdd(nelements, nelements_added);
-          newelemndx = oldelements;
-          if (IS_SEGMENT(mesh.elements[cavity[0]]))
-          {
-            cseg1 = add_segment(mesh, mesh.elements[cavity[0]].x, cnode, newelemndx++);
-            cseg2 = add_segment(mesh, cnode, mesh.elements[cavity[0]].y, newelemndx++);
-          }
-          for (int i = 0; i < bc; i+=4)
-          {
-            uint ntri = add_triangle(mesh, boundary[i], boundary[i+1], cnode, boundary[i+2], boundary[i+3], newelemndx++);
-          }
-          assert(oldelements + nelements_added == newelemndx);
-          setup_neighbours(mesh, oldelements, newelemndx);
-          repush = true;
-          for (int i = 0; i < nc; i++)
-          {
-            mesh.isdel[cavity[i]] = true;
-            if (cavity[i] == ele)
-            {
-              repush = false;
+          oldcav = cavity[0];
+          cavity[0] = opposite(mesh, ele);
+        }while (cavity[0] != oldcav);
+
+        if (!build_cavity(mesh, cavity, nc, CAVLEN, boundary, bc, cx, cy, lockfail, ele))
+        {
+          if(lockfail == 0) build_cavity(mesh, cavity, nc, CAVLEN, boundary, bc, cx, cy, lockfail, ele);
+        }
+        if(lockfail == 0){
+          for (int i = 0; i < bc; i += 4) {
+            if (!lock((int *)&mesh.elements[boundary[i + 2]])) {
+              lockfail = 1;
+              unlock((int *)&mesh.elements[ele]);
+              for (int j = 0; j < nc; j++) {
+                unlock((int *)&mesh.elements[cavity[j]]);
+              }
+              for (int j = 0; j <= i; j += 4) {
+                unlock((int *)&mesh.elements[boundary[j + 2]]);
+              }
+              break;
             }
           }
         }
       }
-      else
-      {
+      
+      int nodes_added = 0;
+      int elems_added = 0;
+      if (lockfail == 1) {
         repush = true;
+      }else{
+        nodes_added = 1;
+        elems_added = (bc >> 2) + (IS_SEGMENT(mesh.elements[cavity[0]]) ? 2 : 0);
+
+        uint cnode = add_node(mesh, cx, cy, atomicAdd(nnodes, 1));
+        uint cseg1 = 0, cseg2 = 0;
+        uint nelements_added = elems_added;
+        uint oldelements = atomicAdd(nelements, nelements_added);
+
+        uint newelemndx = oldelements;
+        if (IS_SEGMENT(mesh.elements[cavity[0]])) {
+          cseg1 = add_segment(mesh, mesh.elements[cavity[0]].x, cnode,newelemndx++);
+          cseg2 = add_segment(mesh, cnode, mesh.elements[cavity[0]].y, newelemndx++);
+        }
+        for (int i = 0; i < bc; i += 4) {
+          uint ntri = add_triangle(mesh, boundary[i], boundary[i + 1],
+                      cnode, boundary[i + 2], boundary[i + 3], newelemndx++);
+        }
+        assert(oldelements + nelements_added == newelemndx);
+        setup_neighbours(mesh, oldelements, newelemndx);
+
+        repush = true;
+        for (int i = 0; i < nc; i++) {
+          // mesh.isdel[cavity[i]] = true;
+          volatile bool* del = &(mesh.isdel[cavity[i]]);
+          *del = true;
+          // if the resulting cavity does not contain the original triangle
+          // (because of the opposite() routine, add it back.
+          if (cavity[i] == ele)
+            repush = false;
+        }
       }
     }
-    gb.Sync();
     if (repush)
-    {
       (out_wl).push(ele);
-      continue;
+
+    unlock((int *)&mesh.elements[ele]);
+    for (int i = 0; i < nc; i++) {
+      unlock((int *)&mesh.elements[cavity[i]]);
     }
+    for (int i = 0; i < bc; i += 4) {
+      unlock((int *)&mesh.elements[boundary[i + 2]]);
+    } 
   }
 }
 void refine_mesh(ShMesh& mesh, dim3 blocks, dim3 threads)

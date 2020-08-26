@@ -5,6 +5,7 @@
 #include "gbar.cuh"
 #include <cub/cub.cuh>
 #include "devel.h"
+#include "lock.cuh"
 #include <map>
 
 #undef TB_SIZE
@@ -86,8 +87,8 @@ void read_mesh(const char *basefile, ShMesh &mesh, int maxfactor)
   readTriangles(basefile, mesh, maxfactor);
 
   assert(mesh.maxnelements > 0);
-  printf("memory for owners: %d MB\n", mesh.maxnelements * sizeof(int) / 1048576);
-  mesh.owners.alloc(mesh.maxnelements);
+  //printf("memory for owners: %d MB\n", mesh.maxnelements * sizeof(int) / 1048576);
+  //mesh.owners.alloc(mesh.maxnelements);
   // see refine() for actual allocation
   printf("memory for worklists: %d MB\n", 2 * mesh.nelements * sizeof(int) / 1048576);
 
@@ -210,14 +211,14 @@ __device__ void dump_mesh_element(Mesh &mesh, int element)
   dump_mesh_element(mesh, mesh.elements[element], element);
 }
 
-__device__ bool encroached(Mesh &mesh, int element, uint3 &celement, FORD centerx, FORD centery, bool &is_seg)
+__device__ bool encroached(Mesh &mesh, int element, uint3 &celement, FORD centerx, FORD centery, bool &is_seg, bool &lockfail)
 {
   if(element == INVALIDID)
     return false;
 
   assert(!mesh.isdel[element]);
 
-  uint3 ele = LOADCG(&mesh.elements[element]);
+  uint3 ele = mesh.elements[element];
 
   if(IS_SEGMENT(ele)) {
     //if(IS_SEGMENT(celement)) //TODO: regd second segment encroaching?
@@ -393,11 +394,11 @@ __device__ void find_shared_edge(uint3 &elem1, uint3 &elem2, uint se[2])
   assert(se[1] != INVALIDID);
 }
 
-__device__ bool build_cavity(Mesh &mesh, uint cavity[], uint &cavlen, int max_cavity, uint boundary[], uint &boundarylen, FORD &cx, FORD &cy)
+__device__ bool build_cavity(Mesh &mesh, uint cavity[], uint &cavlen, int max_cavity, uint boundary[], uint &boundarylen, FORD &cx, FORD &cy, bool &lockfail, int elem)
 {
   int ce = 0;
   //FORD cx, cy;
-  uint3 ele = LOADCG(&mesh.elements[cavity[0]]);
+  uint3 ele = mesh.elements[cavity[0]];
   bool is_seg = false;
 
   if(IS_SEGMENT(ele))
@@ -415,6 +416,15 @@ __device__ bool build_cavity(Mesh &mesh, uint cavity[], uint &cavlen, int max_ca
 
   if(debug) printf("highlight %d %d [%f %f]\n", cavity[0], IS_SEGMENT(ele), cx, cy);
   while (ce < cavlen) {
+    if (!lock((int *)&mesh.elements[cavity[ce]])){
+      //if(cavity[j]!=elem)
+      for (int j = 0; j <= ce; j++) {
+        unlock((int *)&mesh.elements[cavity[j]]);
+      }
+      unlock((int *)&mesh.elements[elem]);                    
+      lockfail = 1;
+      return false;
+    }
     if(mesh.isdel[cavity[ce]])
       printf("deleted: %d\n", cavity[ce]);
 
@@ -422,7 +432,7 @@ __device__ bool build_cavity(Mesh &mesh, uint cavity[], uint &cavlen, int max_ca
     assert(!mesh.isdel[cavity[ce]]);
 
 
-    uint3 neighbours = LOADCG(&mesh.neighbours[cavity[ce]]);
+    uint3 neighbours = mesh.neighbours[cavity[ce]];
     uint neighb[3] = {neighbours.x, neighbours.y, neighbours.z};
 
     for(int i = 0; i < 3; i++) {
@@ -435,13 +445,22 @@ __device__ bool build_cavity(Mesh &mesh, uint cavity[], uint &cavlen, int max_ca
       //printf("neigbour %d\n", neighb[i]);
 
       is_seg  = false;
-      if(!(IS_SEGMENT(ele) && IS_SEGMENT(LOADCG(&mesh.elements[neighb[i]]))) && 
-	 encroached(mesh, neighb[i], ele, cx, cy, is_seg)) {
+      if(!(IS_SEGMENT(ele) && IS_SEGMENT(mesh.elements[neighb[i]])) && 
+	 encroached(mesh, neighb[i], ele, cx, cy, is_seg, lockfail)) {
 	if(!is_seg)
 	  add_to_cavity(cavity, cavlen, neighb[i]);
 	else {
+          for (int j = 0; j <= ce; j++) {
+            if(cavity[j]!=elem)unlock((int *)&mesh.elements[cavity[j]]);
+          }
 	  assert(!IS_SEGMENT(ele));
 	  cavity[0] = neighb[i];
+          if(!lock((int *)&mesh.elements[cavity[0]])){
+            unlock((int *)&mesh.elements[cavity[0]]);
+            unlock((int *)&mesh.elements[elem]);
+            lockfail = 1;
+            return false;
+          }
 	  cavlen = 1;
 	  boundarylen = 0;
 	  return false;
@@ -546,7 +565,7 @@ __device__ uint opposite(Mesh &mesh, uint element)
 }
 
 
-__global__
+/*__global__
 void refine_orig(Mesh mesh, int debg, uint *nnodes, uint *nelements, Worklist2 wl, Worklist2 owl, ExclusiveLocks _ex, GlobalBarrier gb)
 {
   int id = threadIdx.x + blockDim.x * blockIdx.x;
@@ -752,7 +771,7 @@ void refine_orig(Mesh mesh, int debg, uint *nnodes, uint *nelements, Worklist2 w
       gb.Sync();
     }
 }
-
+*/
 __global__
 void check_triangles_orig(Mesh mesh, unsigned int * bad_triangles, int start, Worklist2 in_wl, Worklist2 wl)
 {
@@ -803,7 +822,7 @@ void check_triangles_orig(Mesh mesh, unsigned int * bad_triangles, int start, Wo
   atomicAdd(bad_triangles, count);
 }
 
-void refine_mesh_orig(ShMesh &mesh, dim3 &blocks, dim3 &threads)
+/*void refine_mesh_orig(ShMesh &mesh, dim3 &blocks, dim3 &threads)
 {
   ExclusiveLocks refine_ex_locks(mesh.maxnelements);
   Shared<uint> nbad(1);
@@ -876,4 +895,4 @@ void refine_mesh_orig(ShMesh &mesh, dim3 &blocks, dim3 &threads)
   printf("%d final bad triangles\n", cnbad);
   //printf("time: %f ms\n", (endtime - starttime) * 1000);
   //printf("\truntime [dmr] = %f ms\n", (endtime - starttime) * 1000);
-}
+}*/
