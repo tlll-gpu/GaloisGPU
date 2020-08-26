@@ -8,6 +8,14 @@ maintained by Shewchuk:
 
 https://www.cs.cmu.edu/~quake/triangle.research.html
 
+##TLLL
+If you use TLLL in your work or research, please kindly let us know about it. We also encourage you to reference our paper:)
+
+Here is the reference:
+
+Lan Gao, Yunlong Xu, Rui Wang, Zhongzhi Luan, Zhibin Yu, Depei Qian. Thread-Level Locking for SIMT Architectures. IEEE Transactions on Parallel and Distributed System, 2020, 31(5): 1121-1136.
+
+
 ## BUILD
 
 Run make in root directory or source files (e.g. apps/dmr)
